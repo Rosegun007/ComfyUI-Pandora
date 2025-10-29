@@ -4,7 +4,7 @@ import logging
 import torch
 import nodes
 import comfy_extras
-from PIL import Image, ImageDraw, ImageFont, ImageColor
+from PIL import Image, ImageDraw, ImageFont, ImageColor, ImageOps
 from nodes import PreviewImage
 
 base_path = os.path.dirname(__file__)
@@ -74,6 +74,23 @@ def _compute_anchor_xy(pos, W, H, tw, th):
     else:
         ay = 0
     return int(round(ax)), int(round(ay))
+
+def _get_resource_of_image(image_path):
+    i = Image.open(image_path)
+    i = ImageOps.exif_transpose(i)
+    image = i.convert("RGB")
+    image = np.array(image).astype(np.float32) / 255.0
+    image = torch.from_numpy(image)[None,]
+    if 'A' in i.getbands():
+        mask = np.array(i.getchannel('A')).astype(np.float32) / 255.0
+        mask = 1. - torch.from_numpy(mask)
+        image_masked = i.convert("RGBA")
+        image_masked = np.array(image_masked).astype(np.float32) / 255.0
+        image_masked = torch.from_numpy(image_masked)[None,]
+    else:
+        mask = torch.zeros((64,64), dtype=torch.float32, device="cpu")
+        image_masked = image
+    return (image, mask, image_masked)
 
 class TextOnImage_Pandora:
     def __init__(self):
@@ -208,6 +225,27 @@ class PreviewImage_Pandora(PreviewImage):
         results["result"] = (kwargs["images"],)
         return results
 
+class ImageFromFile_Pandora(PreviewImage):
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image_path": ("STRING", {"default": ""}),
+            },
+        }
+    RETURN_TYPES = ("IMAGE", "MASK", "STRING")
+    FUNCTION = "image_from_file"
+    CATEGORY = "Pandora ⚕️/Image ⚕️"
+    def image_from_file(self, image_path):
+        valid_extensions = [".jpg", ".jpeg", ".png", ".webp"]
+        extension = os.path.splitext(image_path)[1].lower()
+        if extension not in valid_extensions or not os.path.exists(image_path):
+            return (None, None) 
+        (image, mask, image_masked) = _get_resource_of_image(image_path)
+        results = nodes.PreviewImage().save_images(image_masked)
+        results["result"] = (image, mask.unsqueeze(0), image_path)
+        return results
+
 class ImageFillColor_Pandora:
     @classmethod
     def INPUT_TYPES(s):
@@ -266,6 +304,7 @@ class PreviewMask_Pandora(MaskToImage_Pandora):
 NODE_CLASS_MAPPINGS = {
     "Text On Image | Pandora": TextOnImage_Pandora,
     "Preview Image | Pandora": PreviewImage_Pandora,
+    "Image From File | Pandora": ImageFromFile_Pandora,
     "Image Fill Color | Pandora": ImageFillColor_Pandora,
     "Mask to Image | Pandora": MaskToImage_Pandora,
     "Preview Mask | Pandora": PreviewMask_Pandora,
@@ -274,6 +313,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "Text On Image | Pandora": "Text On Image ⚕️",
     "Preview Image | Pandora": "Preview Image ⚕️",
+    "Image From File | Pandora": "Image From File ⚕️",
     "Image Fill Color | Pandora": "Image Fill Color ⚕️",
     "Mask to Image | Pandora": "Mask to Image ⚕️",
     "Preview Mask | Pandora": "Preview Mask ⚕️",
