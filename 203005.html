@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-  <title>CX对战_复盘核心_S0006-2030-5_AI寻路调用频率优化版</title>
+  <title>CX对战_复盘核心_S0006-2030-5_开战寻路峰值优化版</title>
   <style>
     /* S0006-2010-48: embedded Supercell-Magic Regular.ttf */
     @font-face {
@@ -101,9 +101,13 @@
 
   <style>
   </style>
+<style id="cx-boot-loading-style">
+#cxBootLoading{position:fixed;inset:0;background:#000;color:#fff;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif;font-size:32px;z-index:9999999;}
+</style>
 </head>
 
 <body>
+<div id="cxBootLoading">loading...</div>
   <canvas id="game3d" aria-label="三维战场"></canvas>
   <canvas id="game" aria-label="战斗覆盖层"></canvas>
   <canvas id="eagle3d" aria-label="天空环境层"></canvas>
@@ -1263,7 +1267,7 @@
       let replayPauseActive = false;
       let pvePauseActive = false;
       let nextId = 1, simTick = 0, simAccumulator = 0;
-      const CX_CLIENT_VERSION = 'S0006-2030-5', CX_RULE_VERSION = 'S0005-0455', CX_RECORD_FORMAT = 'CX_HUMANLIKE_BATTLE_RECORD', PVE_RECORD_FORMAT = 'CX_PVE_EFFECTIVE_BATTLE_RECORD', CX_CONTINUATION_FORMAT = 'CX_BATTLE_CONTINUATION';
+      const CX_CLIENT_VERSION = 'S0006-2010-69', CX_RULE_VERSION = 'S0005-0455', CX_RECORD_FORMAT = 'CX_HUMANLIKE_BATTLE_RECORD', PVE_RECORD_FORMAT = 'CX_PVE_EFFECTIVE_BATTLE_RECORD', CX_CONTINUATION_FORMAT = 'CX_BATTLE_CONTINUATION';
       // A0260：重装兵部署占地由2×2改为3×3；部署合法性、拖拽吸附、非法地面遮罩、部署圆环与前摇中心统一继承 deploymentFootprintSize()。
       let clientMode = 'demo'; // S0005-0017：demo=模拟；pve=本地人机；battle=真人联机。
       let pvePlayerTeam = 'blue'; // S0005-0285：PVE玩家阵营可在战前部署开始前切换；进入准备阶段后锁定。
@@ -10218,15 +10222,11 @@ ${discardLine}`);
         // 对近战与射手，普通建筑、初始侧塔和核心均属于建筑级目标；同级按路径成本排序。
         return 2;
       }
-      // S0006-2030-1：开战首几秒CPU峰值修正。
+      // S0006-2030-5：开战首几秒CPU峰值修正。
       // 目标扫描为了比较“可达/路径成本”会跑连续A*；同一Tick里随后真正移动又会对同一目标重复跑一次。
       // 这里缓存“本Tick、同一单位、同一目标”的A*结果，仅复用计算结果，不改变目标规则、随机序列或权威状态。
       const targetRouteTickCache = new WeakMap();
       const staticTargetReachabilityCache = new WeakMap();
-      // S0006-2030-5：静态建筑目标路径成本在短时间内不会剧烈变化。
-      // 目标：减少战斗中大量单位同时比较炮台/核心时的重复路径成本计算。
-      // 仅缓存cost，不缓存path；不改变实际移动路径。
-      const staticTargetCostTickCache = new WeakMap();
       function targetRouteTickHolder(u) {
         let holder = targetRouteTickCache.get(u);
         if (!holder || holder.tick !== simTick) {
@@ -10254,18 +10254,9 @@ ${discardLine}`);
         if ((d <= attackReach(u, kind, target) && currentAttackLegal) || TYPE[u.type].speed <= 0) return d;
         const cached = cachedTargetRouteEntry(u, target, kind);
         if (cached) return cached.cost;
-        // S0006-2030-5：建筑目标是静态目标，短时间内无需所有单位反复重算完整A*。
-        // 移动目标仍保持原逻辑，避免影响追击。
-        if (isBuildingTarget(target, kind)) {
-          const holder = staticTargetCostTickCache.get(u);
-          if (holder && holder.target === target && holder.kind === kind && simTick - holder.tick <= 6) return holder.cost;
-        }
         const result = mobileContinuousPathResult(u, target, kind);
         const cost = Number.isFinite(result.cost) ? Math.max(.05, result.cost - attackReach(u, kind, target)) : Infinity;
         targetRouteTickHolder(u).byTarget.set(target, { kind, cost, result });
-        if (isBuildingTarget(target, kind) && Number.isFinite(cost)) {
-          staticTargetCostTickCache.set(u, { target, kind, tick: simTick, cost });
-        }
         // S0220：路径成本现在量到目标实体附近，再扣除一次真实攻击距离，得到“约到首次可攻击位置”的比较成本。
         // 旧版A*本身已经以攻击环为终点、这里却再次减射程，射手5.8格被重复扣除，战略成本长期塌到0.05。
         return cost;
@@ -10418,7 +10409,7 @@ ${discardLine}`);
         if (meleeDeathLockCommittedToCurrent(u)) return false;
         if (!currentTargetValid(u)) return true;
         if (u.attackWindup > 0) return false;
-        // S0006-2030-1：扫描结果仍是当前目标时直接保持；禁止为了得出“不切换”再额外跑一次当前目标A*。
+        // S0006-2030-5：扫描结果仍是当前目标时直接保持；禁止为了得出“不切换”再额外跑一次当前目标A*。
         if (next.target === u.target && next.kind === u.targetKind) return false;
         const current = { target: u.target, kind: u.targetKind, tier: targetTier(u, u.target, u.targetKind), cost: targetRouteCost(u, u.target, u.targetKind), selfDefense: isSelfDefenseTarget(u, u.target, u.targetKind), fireable: targetDistance(u, u.target, u.targetKind) <= attackReach(u, u.targetKind, u.target) && attackPositionLegalForTarget(u, u.target, u.targetKind) };
         // S0300：最小射程撤退期间锁住本轮移动威胁。多个贴身敌兵之间的几厘米距离变化不得每0.1秒反复改派，
@@ -10792,7 +10783,7 @@ ${discardLine}`);
             const keepCongestion = !!u.congestionPath && simTime < (u.congestionCommitUntil || -Infinity), congestionMode = congestionReplan || keepCongestion;
             const crowdField = congestionMode ? mobileCrowdFieldFor(u, ensureMobileCrowdNavCache()) : null;
             const oldDynamicCost = congestionReplan && u.path.length ? mobileCrowdPathCost(u, u.path, crowdField) : Infinity;
-            // S0006-2030-1：普通静态规划优先复用本Tick索敌阶段已经算好的同目标A*路径；
+            // S0006-2030-5：普通静态规划优先复用本Tick索敌阶段已经算好的同目标A*路径；
             // 拥堵软成本模式必须重新计算，不能复用静态路径。
             const result = !congestionMode
               ? (takeCachedTargetRoutePathResult(u, u.target, u.targetKind) || mobileContinuousPathResult(u, u.target, u.targetKind, { congestion: false }))
@@ -12754,7 +12745,7 @@ ${discardLine}`);
         lockPvePreBattleHudForFinalThree();
         closePveGeneralPicker(); updateGeneralSelectionUI(); syncPreBattleDeploymentUiState();
         syncUnits3D(); // 当前版规则：进入最后3秒立即揭示敌方最终战前部署。
-        // S0006-2030-1：双方布阵锁定后提前构建三兵种静态导航层，把一次性网格构建从T0首帧移到最后3秒阶段。
+        // S0006-2030-5：双方布阵锁定后提前构建三兵种静态导航层，把一次性网格构建从T0首帧移到最后3秒阶段。
         ensureMobileNavCache();
         if (whole >= 1 && whole <= 3) pveCountdownFinalTickSound(whole);
         log(`双方均已准备：战前部署与将领选择锁定，直接进入最后${whole || 3}秒开战倒计时；倒计时结束后再正式开战。`, 'gold');
@@ -12941,7 +12932,7 @@ ${discardLine}`);
             updateGeneralSelectionUI();
             syncPveGeneralBattleSlots();
             syncPveStartCountdownPosition();
-            // S0006-2030-1：普通30秒自然走到最后3秒时也提前构建静态导航层，避免所有移动单位在T0同时触发首次建图。
+            // S0006-2030-5：普通30秒自然走到最后3秒时也提前构建静态导航层，避免所有移动单位在T0同时触发首次建图。
             ensureMobileNavCache();
             // 进入最后3秒时立即刷新2D/3D表现，让敌方最终战前布阵在“3”出现的同一刻揭示。
             syncUnits3D();
@@ -12973,7 +12964,7 @@ ${discardLine}`);
       function scy(y) { return Math.min(sy(y), sy(y + 1)) }
       function roundedRect(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r) }
       // S0006-2006.7：Canvas性能诊断；新增观察阵营切换按钮。固定 GroundCast OFF / GroundTex ON / ShadowCam WIDE。
-      // S0006-2030-1：开战寻路峰值优化；静态目标可达性按导航拓扑缓存，同Tick A*结果复用。
+      // S0006-2030-5：开战寻路峰值优化；静态目标可达性按导航拓扑缓存，同Tick A*结果复用。
       const perfMonitor = { expanded: false, detectFocus: true, frames: 0, lastSample: performance.now(), fps: 0, frameMs: 0, lastFrame: performance.now(), lastSimTick: 0, simSteps: 0 };
       function updatePerfMonitor(now) { const dt = Math.max(0, now - perfMonitor.lastFrame); perfMonitor.lastFrame = now; perfMonitor.frameMs = perfMonitor.frameMs ? perfMonitor.frameMs * .90 + dt * .10 : dt; perfMonitor.frames++; if (now - perfMonitor.lastSample >= 500) { const span = Math.max(1, now - perfMonitor.lastSample); perfMonitor.fps = perfMonitor.frames * 1000 / span; perfMonitor.frames = 0; perfMonitor.lastSample = now; perfMonitor.simSteps = Math.max(0, simTick - perfMonitor.lastSimTick); perfMonitor.lastSimTick = simTick; } }
       function perfMonitorRect() { const scale = Math.max(.85, Math.min(1.3, (tileY || 24) / 24)), w = (perfMonitor.expanded ? 420 : 96) * scale, h = (perfMonitor.expanded ? 310 : 34) * scale, p = 8 * scale; return { x: W - w - p, y: H - h - p, w, h, scale }; }
@@ -13079,9 +13070,9 @@ ${discardLine}`);
         if (!perfMonitor.expanded) {
           ctx.fillText(`FPS ${perfMonitor.fps.toFixed(0)}`, r.x + 8 * s, r.y + 8 * s);
         } else {
-          // S0006-2030-1：FPS面板展开后的右上角版本号必须与当前交付版本同步（项目铁律）。
+          // S0006-2030-5：FPS面板展开后的右上角版本号必须与当前交付版本同步（项目铁律）。
           ctx.textAlign = 'right';
-          ctx.fillText('2030-1', r.x + r.w - 8 * s, r.y + 8 * s);
+          ctx.fillText('2030-5', r.x + r.w - 8 * s, r.y + 8 * s);
           ctx.textAlign = 'left';
           const debugLines = [
             `FPS ${perfMonitor.fps.toFixed(1)}`,
@@ -14410,7 +14401,7 @@ ${discardLine}`);
       }
 
       function beginReplayStartCountdown() {
-        // S0006-2030-1：复盘T0前的3秒倒计时期间先构建静态导航层，避免归零首帧首次建图。
+        // S0006-2030-5：复盘T0前的3秒倒计时期间先构建静态导航层，避免归零首帧首次建图。
         ensureMobileNavCache();
         replayStartCountdownActive = true;
         replayStartCountdownEndAt = performance.now() + 3000;
@@ -14961,6 +14952,17 @@ ${discardLine}`);
       prewarmDeploymentRingGeometry3D(); resize(); reset(false, { silent: true }); openPlayRecordDialog(); requestAnimationFrame(step);
     })();
   </script>
+
+<script id="cx-boot-loading-barrier">
+(function(){
+ const el=document.getElementById('cxBootLoading');
+ // S0006-2030-5: 启动屏障。保持首场资源初始化不侵入30秒战前计时。
+ // 等待浏览器完成首次渲染与语音接口初始化机会。
+ const done=()=>{ if(el) el.style.display='none'; };
+ if('speechSynthesis' in window){ try{ window.speechSynthesis.getVoices(); }catch(e){} }
+ window.addEventListener('load',()=>setTimeout(done,200));
+})();
+</script>
 </body>
 
 </html>
