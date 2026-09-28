@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-  <title>CX对战_复盘核心_S0006-2030-2_Practice首场语音同步修正版</title>
+  <title>CX对战_复盘核心_S0006-2030-2_首场Practice语音同步修正版</title>
   <style>
     /* S0006-2010-48: embedded Supercell-Magic Regular.ttf */
     @font-face {
@@ -1026,7 +1026,9 @@
 
         // 人机模式战前30秒倒计时进入暂停时，保存剩余时间。
         if (pveStartCountdownActive && typeof pveStartCountdownEndAt === 'number') {
-          pvePauseFrozenCountdownRemainMs = Math.max(0, pveStartCountdownEndAt - performance.now());
+          pvePauseFrozenCountdownRemainMs = pveStartCountdownSpeechPending
+            ? PVE_START_COUNTDOWN_SECONDS * 1000
+            : Math.max(0, pveStartCountdownEndAt - performance.now());
           pveStartCountdownEndAt = null;
         }
 
@@ -1263,6 +1265,7 @@
       let replayPauseActive = false;
       let pvePauseActive = false;
       let nextId = 1, simTick = 0, simAccumulator = 0;
+      const CX_DELIVERY_VERSION = '2030-2';
       const CX_CLIENT_VERSION = 'S0006-2010-69', CX_RULE_VERSION = 'S0005-0455', CX_RECORD_FORMAT = 'CX_HUMANLIKE_BATTLE_RECORD', PVE_RECORD_FORMAT = 'CX_PVE_EFFECTIVE_BATTLE_RECORD', CX_CONTINUATION_FORMAT = 'CX_BATTLE_CONTINUATION';
       // A0260：重装兵部署占地由2×2改为3×3；部署合法性、拖拽吸附、非法地面遮罩、部署圆环与前摇中心统一继承 deploymentFootprintSize()。
       let clientMode = 'demo'; // S0005-0017：demo=模拟；pve=本地人机；battle=真人联机。
@@ -1337,9 +1340,7 @@
       // S0196：联机服务器S0005仍给出旧版约5秒startAt。客户端双方都基于同一个服务器startAt统一顺延25秒，从而得到与PVE一致的30秒战前准备窗口。
       const ONLINE_LEGACY_SERVER_START_LEAD_SECONDS = 5;
       const ONLINE_PREBATTLE_COUNTDOWN_SECONDS = PVE_START_COUNTDOWN_SECONDS;
-      let pveStartCountdownActive = false, pveStartCountdownEndAt = 0, pveStartCountdownLastWhole = null, pveGeneralPickerSlot = null;
-      // S0006-2030-2：首场Practice在系统语音真正开始前保持30秒不走表，避免“语音到28秒才响”。
-      let pveStartCountdownWaitingAudio = false, pveStartAnnouncementToken = 0;
+      let pveStartCountdownActive = false, pveStartCountdownEndAt = 0, pveStartCountdownLastWhole = null, pveStartCountdownSpeechPending = false, pveGeneralPickerSlot = null;
       let pveGeneralPickerCanvasRect = null, pveGeneralPickerCanvasCloseRect = null, pveGeneralPickerCanvasListRect = null, pveGeneralPickerCanvasRows = [];
       let pveGeneralPickerCanvasSide = '', pveGeneralPickerScroll = 0, pveGeneralPickerScrollMax = 0, pveGeneralPickerScrollDrag = null;
       let pveGeneralCarrierHitRects = [];
@@ -1591,7 +1592,7 @@
       function generalUiOwnTeam() { if (clientMode === 'battle' && online.localTeam) return online.localTeam; if (clientMode === 'pve') return pvePlayerTeam; return generalRecordReplayUiActive() ? playerUiTeam() : 'blue'; }
       function generalUiEnemyTeam() { return generalUiOwnTeam() === 'blue' ? 'red' : 'blue'; }
       function onlineGeneralsReady() { return clientMode === 'battle' && !!online.localTeam && ['blue', 'red'].every(team => (online.generalSyncSlots?.[team] || []).length === 2 && (online.generalSyncSlots[team] || []).every(id => !!GENERAL_CONFIG[id])); }
-      function generalSelectionEditable() { return (clientMode === 'pve' && pveStartCountdownActive && !started && !pveReadyState[pvePlayerTeam]) || (clientMode === 'battle' && online.status === 'matched' && !started && !!online.localTeam && !pveReadyState[online.localTeam]); }
+      function generalSelectionEditable() { return (clientMode === 'pve' && pveStartCountdownActive && !pveStartCountdownSpeechPending && !started && !pveReadyState[pvePlayerTeam]) || (clientMode === 'battle' && online.status === 'matched' && !started && !!online.localTeam && !pveReadyState[online.localTeam]); }
       function extractRecordGeneralSelection(record = loadedRecord) {
         if (!record || typeof record !== 'object') return null;
         const profile = record?.battleProfile?.generalSelection || record?.battleProfile?.generals || record?.generals?.battleStart || null;
@@ -2278,21 +2279,52 @@
         if (!soundEnabled || !AudioContextClass) return null;
         try { if (!audioCtx) audioCtx = new AudioContextClass(); if (audioCtx.state === 'suspended') audioCtx.resume(); return audioCtx; } catch (_) { return null; }
       }
-      // S0006-2030-2：iOS Safari 首次使用系统TTS时可能冷启动约1~2秒。
-      // 在用户第一次触摸/点击时静默预热语音引擎；真正的Practice通报仍只在进入30秒赛前阶段时播放。
-      let pveSpeechWarmupIssued = false;
-      function primePveSpeechSynthesis() {
-        if (pveSpeechWarmupIssued || !soundEnabled || !('speechSynthesis' in window) || typeof SpeechSynthesisUtterance === 'undefined') return;
-        pveSpeechWarmupIssued = true;
+
+      // S0006-2030-2：iOS Safari 首次调用 SpeechSynthesis 时可能要临时启动系统语音服务，
+      // 旧版会让“30秒后开战，请选择将领”在首局已经走到约28秒时才真正开口。
+      // 现在页面加载阶段先请求 voice 列表；第一次真实用户手势再播放一个几乎无声的超短预热 utterance。
+      // 真正PVE倒计时还会等待正式通报的 onstart，再从30秒开始走，彻底禁止“画面先倒数、语音后追上”。
+      let pveSpeechVoice = null;
+      let pveSpeechWarmPending = false;
+      let pveSpeechGesturePrimed = false;
+      function refreshPveSpeechVoice() {
+        if (!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance === 'undefined') return null;
         try {
-          window.speechSynthesis.getVoices();
-          const warm = new SpeechSynthesisUtterance('嗯');
-          warm.lang = 'zh-CN'; warm.volume = 0; warm.rate = 2; warm.pitch = 1;
-          window.speechSynthesis.speak(warm);
-        } catch (_) { /* 预热失败不影响正式通报 */ }
+          const voices = window.speechSynthesis.getVoices() || [];
+          const pick = voices.find(v => /^zh[-_]CN$/i.test(v.lang || ''))
+            || voices.find(v => /^zh[-_](Hans|CHS)/i.test(v.lang || ''))
+            || voices.find(v => /^zh/i.test(v.lang || ''));
+          if (pick) pveSpeechVoice = pick;
+          return pveSpeechVoice;
+        } catch (_) { return pveSpeechVoice; }
       }
-      try { if ('speechSynthesis' in window) window.speechSynthesis.getVoices(); } catch (_) {}
-      window.addEventListener('pointerdown', () => { ensureAudio(); primePveSpeechSynthesis(); }, { capture: true, once: true, passive: true });
+      function primePveSpeechVoices() {
+        if (!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance === 'undefined') return;
+        refreshPveSpeechVoice();
+        try { window.speechSynthesis.addEventListener('voiceschanged', refreshPveSpeechVoice); } catch (_) { }
+      }
+      function primePveSpeechFromGesture() {
+        if (pveSpeechGesturePrimed || !soundEnabled || !('speechSynthesis' in window) || typeof SpeechSynthesisUtterance === 'undefined') return;
+        pveSpeechGesturePrimed = true;
+        try {
+          refreshPveSpeechVoice();
+          const u = new SpeechSynthesisUtterance('。');
+          if (pveSpeechVoice) u.voice = pveSpeechVoice;
+          u.lang = pveSpeechVoice?.lang || 'zh-CN';
+          u.volume = 0.0001;
+          u.rate = 10;
+          u.pitch = 1;
+          pveSpeechWarmPending = true;
+          const clearWarm = () => { pveSpeechWarmPending = false; };
+          u.onend = clearWarm;
+          u.onerror = clearWarm;
+          window.speechSynthesis.speak(u);
+        } catch (_) { pveSpeechWarmPending = false; }
+      }
+      primePveSpeechVoices();
+      window.addEventListener('pointerdown', primePveSpeechFromGesture, { capture: true, passive: true, once: true });
+      window.addEventListener('touchstart', primePveSpeechFromGesture, { capture: true, passive: true, once: true });
+      window.addEventListener('keydown', primePveSpeechFromGesture, { capture: true, once: true });
       function tone(freq, duration = .08, type = 'sine', volume = .025, delay = 0, endFreq = null) {
         const ac = ensureAudio(); if (!ac) return; const t = ac.currentTime + delay;
         const osc = ac.createOscillator(), gain = ac.createGain(); osc.type = type; osc.frequency.setValueAtTime(freq, t);
@@ -2411,32 +2443,49 @@
         else if (name === 'resultStar') { const n = Math.max(1, Math.min(5, Number(opt.index) || 1)); const f = 520 + n * 54; tone(f, .065, 'triangle', .025); tone(f * 1.48, .090, 'sine', .018, .045); }
         else if (name === 'toggle') { tone(620, .07, 'sine', .022); }
       }
-      function announcePveStartCountdown(onAudibleStart = null) {
-        // S0006-2030-2：警报音立即发声；系统中文TTS以 utterance.onstart 作为30秒倒计时的真实起点。
-        // 这样即使iOS Safari首场需要冷启动中文语音，也不会让倒计时先偷偷走掉2秒。
+      function announcePveStartCountdown(onVoiceStart = null) {
+        // S0006-2030-2：首场PVE的30秒时钟必须和系统语音“真正开始发声”同步。
+        // iOS Safari冷启动SpeechSynthesis可能需要约1~2秒；这段初始化时间不再偷偷消耗倒计时。
         ensureAudio();
-        tone(440, .18, 'square', .085, 0, 620); tone(660, .20, 'square', .085, .20, 880); noiseBurst(.16, .040, .02, 1250, 'bandpass');
-        let startedCbFired = false;
-        const fireStarted = (source = 'audio') => {
-          if (startedCbFired) return;
-          startedCbFired = true;
-          if (typeof onAudibleStart === 'function') onAudibleStart(source);
+        const requestedAt = performance.now();
+        let startCommitted = false;
+        let failSafeTimer = 0;
+        const commitStart = (reason = 'voice') => {
+          if (startCommitted) return;
+          startCommitted = true;
+          if (failSafeTimer) clearTimeout(failSafeTimer);
+          if (typeof onVoiceStart === 'function') onVoiceStart(reason, performance.now() - requestedAt);
+        };
+        const playAlarm = () => {
+          tone(440, .18, 'square', .085, 0, 620);
+          tone(660, .20, 'square', .085, .20, 880);
+          noiseBurst(.16, .040, .02, 1250, 'bandpass');
         };
         if (soundEnabled && 'speechSynthesis' in window && typeof SpeechSynthesisUtterance !== 'undefined') {
           try {
-            window.speechSynthesis.cancel();
+            refreshPveSpeechVoice();
+            // 首次用户手势的静音预热若仍在队列中，不要cancel掉；正式通报排在它后面即可。
+            if (!pveSpeechWarmPending) window.speechSynthesis.cancel();
             const u = new SpeechSynthesisUtterance('三十秒后开战，请选择将领');
-            u.lang = 'zh-CN'; u.volume = 1; u.rate = 1.02; u.pitch = .92;
-            u.onstart = () => fireStarted('tts');
-            u.onerror = () => fireStarted('tts-error');
+            if (pveSpeechVoice) u.voice = pveSpeechVoice;
+            u.lang = pveSpeechVoice?.lang || 'zh-CN';
+            u.volume = 1; u.rate = 1.02; u.pitch = .92;
+            u.onstart = () => { if (startCommitted) return; playAlarm(); commitStart('voice'); };
+            u.onerror = () => { if (startCommitted) return; playAlarm(); commitStart('speech-error'); };
             window.speechSynthesis.speak(u);
-            // 极少数Safari版本可能不派发onstart；3.5秒保险仅防止倒计时永久停在30，不参与正常路径。
-            setTimeout(() => fireStarted('tts-timeout'), 3500);
-            return true;
-          } catch (_) { /* WebAudio警报作为可靠后备 */ }
+            // 极端Safari异常下，不能让赛前状态永久卡在30秒。若4秒仍没有onstart，
+            // 放弃这次TTS并从30秒正常开表；宁可本次没有语音，也不允许28秒才突然追播。
+            failSafeTimer = window.setTimeout(() => {
+              if (startCommitted) return;
+              try { window.speechSynthesis.cancel(); } catch (_) { }
+              playAlarm();
+              commitStart('speech-timeout');
+            }, 4000);
+            return;
+          } catch (_) { /* 下面使用WebAudio后备并立即开表 */ }
         }
-        fireStarted('webaudio');
-        return false;
+        playAlarm();
+        commitStart('no-speech');
       }
       function pveCountdownFinalTickSound(whole) {
         if (!soundEnabled) return;
@@ -6216,7 +6265,6 @@
         const pveFinalThreeReveal =
           clientMode === 'pve' &&
           pveStartCountdownActive &&
-          !pveStartCountdownWaitingAudio &&
           !started &&
           Number.isFinite(Number(pveStartCountdownLastWhole)) &&
           Number(pveStartCountdownLastWhole) <= 3;
@@ -7723,8 +7771,7 @@ ${discardLine}`);
         pvePlayerTeam = 'blue';
         redAtBottom = false;
         replayStartCountdownActive = false; replayStartCountdownEndAt = 0; replayStartCountdownWhole = 0;
-        pveStartAnnouncementToken++; pveStartCountdownWaitingAudio = false;
-        pveStartCountdownActive = false; pveStartCountdownEndAt = 0; pveStartCountdownLastWhole = null;
+        pveStartCountdownActive = false; pveStartCountdownEndAt = 0; pveStartCountdownLastWhole = null; pveStartCountdownSpeechPending = false;
         loadedRecord = null; loadedRecordSourceName = ''; recordContinuationActive = false; recordCompletionPaused = false; recordCompletionShown = false; recordHalted = false;
         selectedBattleFlagType = null; battleFlagDragPlacement = null;
         hudDeployPopupUnitType = null; hudDeployPopupRects = [];
@@ -7751,36 +7798,32 @@ ${discardLine}`);
         resetBattleFlags();
         resetPveOpeningTurretFacing();
         closeHudDeployPopup();
-        // S0006-2030-2：先完成首场可能较慢的AI预部署/首次3D克隆，再正式启动30秒钟。
-        // 旧版在这里先写 endAt，导致iPhone 11首场冷启动耗时直接从30秒里扣掉，语音常到28秒才真正开始。
-        pveStartCountdownActive = true; pveStartCountdownEndAt = Number.POSITIVE_INFINITY; pveStartCountdownLastWhole = PVE_START_COUNTDOWN_SECONDS;
-        pveStartCountdownWaitingAudio = true;
-        const announcementToken = ++pveStartAnnouncementToken;
+        pveStartCountdownActive = true;
+        pveStartCountdownSpeechPending = true;
+        // 先固定显示30，但在正式TTS真正onstart之前不消耗任何一秒。
+        // 给endAt一个正常值只是保证暂停/布局等旧路径仍有有限数可读；updatePveStartCountdown会在pending时禁止推进。
+        pveStartCountdownEndAt = performance.now() + PVE_START_COUNTDOWN_SECONDS * 1000;
+        pveStartCountdownLastWhole = PVE_START_COUNTDOWN_SECONDS;
         pveReadyState = { blue: false, red: false }; pveReadyState[pveAiTeam()] = true;
         // S0006-2010-16：恢复 S0006-0043 / S0005-0483~0484 的 AI 战前部署。
         // AI 在30秒赛前阶段立即建立固定、确定性的 slow 布阵；敌方布阵在 T0 前仍由表现层隐藏。
-        const coldSetupT0 = performance.now();
         applyPveAiPreBattleDeployment();
-        const coldSetupMs = performance.now() - coldSetupT0;
         updatePveStartCountdownVisual(PVE_START_COUNTDOWN_SECONDS); updateGeneralSelectionUI();
-        // 将正式通报放到一次绘制/冷启动之后；TTS真正onstart时才落下30秒deadline。
-        const announceQueuedAt = performance.now();
-        announcePveStartCountdown((source) => {
-          if (announcementToken !== pveStartAnnouncementToken || clientMode !== 'pve' || !pveStartCountdownActive || started) return;
-          const now0 = performance.now();
-          pveStartCountdownWaitingAudio = false;
-          pveStartCountdownEndAt = now0 + PVE_START_COUNTDOWN_SECONDS * 1000;
+        announcePveStartCountdown((reason, lagMs) => {
+          if (clientMode !== 'pve' || !pveStartCountdownActive || started) return;
+          pveStartCountdownSpeechPending = false;
+          const now = performance.now();
+          if (pvePauseActive) {
+            pvePauseFrozenCountdownRemainMs = PVE_START_COUNTDOWN_SECONDS * 1000;
+            pveStartCountdownEndAt = null;
+          } else {
+            pveStartCountdownEndAt = now + PVE_START_COUNTDOWN_SECONDS * 1000;
+          }
           pveStartCountdownLastWhole = PVE_START_COUNTDOWN_SECONDS;
-          pveRecordPrepStartedAt = now0;
+          pveRecordPrepStartedAt = now;
           updatePveStartCountdownVisual(PVE_START_COUNTDOWN_SECONDS);
-          // 保留一条可在展开FPS面板中核验首场冷启动与TTS启动延迟的诊断信息。
-          try {
-            if (Array.isArray(window.CX_DIALOG_DEBUG_LINES)) {
-              window.CX_DIALOG_DEBUG_LINES.push(`PVE start setup ${coldSetupMs.toFixed(0)}ms | announce ${Math.max(0, now0 - announceQueuedAt).toFixed(0)}ms | ${source}`);
-              while (window.CX_DIALOG_DEBUG_LINES.length > 8) window.CX_DIALOG_DEBUG_LINES.shift();
-            }
-          } catch (_) {}
-          last = now0;
+          updateGeneralSelectionUI(); syncPreBattleDeploymentUiState();
+          if (lagMs > 120) debugLog(`PVE首场语音启动 ${Math.round(lagMs)}ms (${reason})`);
           draw();
         });
         chapterSet('PVE赛前准备 · 战前部署 / 选择将领');
@@ -12684,6 +12727,7 @@ ${discardLine}`);
         return !!(
           clientMode === 'pve' &&
           pveStartCountdownActive &&
+          !pveStartCountdownSpeechPending &&
           !started &&
           !localPreBattleReady() &&
           whole > 3 &&
@@ -12790,7 +12834,7 @@ ${discardLine}`);
         draw();
         return true;
       }
-      function cancelPveStartCountdown() { pveStartAnnouncementToken++; pveStartCountdownWaitingAudio = false; pveStartCountdownActive = false; pveStartCountdownEndAt = 0; pveStartCountdownLastWhole = null; pveReadyState = { blue: false, red: false }; pveReadyButtonRect = null; updatePveStartCountdownVisual(0); closePveGeneralPicker(); syncPveGeneralBattleSlots(); syncPreBattleDeploymentUiState(); }
+      function cancelPveStartCountdown() { pveStartCountdownActive = false; pveStartCountdownEndAt = 0; pveStartCountdownLastWhole = null; pveStartCountdownSpeechPending = false; pveReadyState = { blue: false, red: false }; pveReadyButtonRect = null; updatePveStartCountdownVisual(0); closePveGeneralPicker(); syncPveGeneralBattleSlots(); syncPreBattleDeploymentUiState(); }
       function enterPveFinalThreeCountdownAfterReady() {
         if (clientMode !== 'pve' || !pveStartCountdownActive || started || !pveReadyState.blue || !pveReadyState.red) return false;
         const now = performance.now(), remaining = Math.max(0, pveStartCountdownEndAt - now), finalMs = Math.min(remaining, 3000);
@@ -12809,13 +12853,12 @@ ${discardLine}`);
       }
       function launchPveMatchAfterCountdown(reason = 'countdown') {
         if (clientMode !== 'pve' || !pveStartCountdownActive) return;
-        pveStartAnnouncementToken++; pveStartCountdownWaitingAudio = false;
         const readyCompletedBeforeLaunch = !!(pveReadyState.blue && pveReadyState.red);
         // S0005-0108：战前阶段的临时可视单位不直接带入T0。先提取“最终布阵”，再从固定种子重新构造一次干净T0，避免赛前UI操作历史污染战斗RNG/Hash。
         const finalPreBattleRows = recordPreBattleDeploymentRows();
         // S0005-0133：真正提交/倒计时结束进入T0时，才把这一局的最终蓝方布阵推入“上次/再上次部署”历史；赛前反复拖放、撤回不会污染历史。
         rememberPreBattleLayout(finalPreBattleRows, pvePlayerTeam);
-        pveReadyState = { blue: true, red: true }; pveStartCountdownActive = false; pveReadyButtonRect = null; updatePveStartCountdownVisual(0); closePveGeneralPicker();
+        pveReadyState = { blue: true, red: true }; pveStartCountdownActive = false; pveStartCountdownSpeechPending = false; pveReadyButtonRect = null; updatePveStartCountdownVisual(0); closePveGeneralPicker();
         reset(false, { silent: true }); started = false; paused = false; matchEnded = false; playbackMode = 'demo'; autoAI = false;
         pvePreBattleDeployments = [];
         for (const row of finalPreBattleRows) instantiatePreBattleDeployment(row, { deductEnergy: true, track: true });
@@ -12966,8 +13009,8 @@ ${discardLine}`);
       function updatePveStartCountdown(now) {
         if (pvePauseActive) return;
         if (!pveStartCountdownActive) return;
-        // S0006-2030-2：首场系统TTS尚未真正开始时，画面保持30秒，不允许时钟先走。
-        if (clientMode === 'pve' && pveStartCountdownWaitingAudio) return;
+        // S0006-2030-2：首局iOS Safari语音冷启动期间固定停在30秒；正式语音onstart后才启动时钟。
+        if (clientMode === 'pve' && pveStartCountdownSpeechPending) return;
         // S0006-2010-59：PVE暂停框打开期间，禁止任何倒计时推进。
         // 不能仅保存endAt，因为主循环仍会读取performance.now()计算leftMs。
         if (pvePauseActive) return;
@@ -13023,7 +13066,7 @@ ${discardLine}`);
       function scy(y) { return Math.min(sy(y), sy(y + 1)) }
       function roundedRect(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r) }
       // S0006-2006.7：Canvas性能诊断；新增观察阵营切换按钮。固定 GroundCast OFF / GroundTex ON / ShadowCam WIDE。
-      // S0006-2030-1：开战寻路峰值优化；静态目标可达性按导航拓扑缓存，同Tick A*结果复用。
+      // S0006-2030-2：继承2030-1开战寻路峰值优化；新增iOS Safari首场Practice语音预热与30秒时钟同步。
       const perfMonitor = { expanded: false, detectFocus: true, frames: 0, lastSample: performance.now(), fps: 0, frameMs: 0, lastFrame: performance.now(), lastSimTick: 0, simSteps: 0 };
       function updatePerfMonitor(now) { const dt = Math.max(0, now - perfMonitor.lastFrame); perfMonitor.lastFrame = now; perfMonitor.frameMs = perfMonitor.frameMs ? perfMonitor.frameMs * .90 + dt * .10 : dt; perfMonitor.frames++; if (now - perfMonitor.lastSample >= 500) { const span = Math.max(1, now - perfMonitor.lastSample); perfMonitor.fps = perfMonitor.frames * 1000 / span; perfMonitor.frames = 0; perfMonitor.lastSample = now; perfMonitor.simSteps = Math.max(0, simTick - perfMonitor.lastSimTick); perfMonitor.lastSimTick = simTick; } }
       function perfMonitorRect() { const scale = Math.max(.85, Math.min(1.3, (tileY || 24) / 24)), w = (perfMonitor.expanded ? 420 : 96) * scale, h = (perfMonitor.expanded ? 310 : 34) * scale, p = 8 * scale; return { x: W - w - p, y: H - h - p, w, h, scale }; }
@@ -13131,7 +13174,7 @@ ${discardLine}`);
         } else {
           // S0006-2030-2：FPS面板展开后的右上角版本号必须与当前交付版本同步（项目铁律）。
           ctx.textAlign = 'right';
-          ctx.fillText('2030-2', r.x + r.w - 8 * s, r.y + 8 * s);
+          ctx.fillText(CX_DELIVERY_VERSION, r.x + r.w - 8 * s, r.y + 8 * s);
           ctx.textAlign = 'left';
           const debugLines = [
             `FPS ${perfMonitor.fps.toFixed(1)}`,
@@ -13534,10 +13577,12 @@ ${discardLine}`);
         return clientMode === 'pve' && pveStartCountdownActive && !started;
       }
       function pvePreBattleRemainingMs(now = performance.now()) {
-        return pvePreBattleCountdownUiActive() ? Math.max(0, pveStartCountdownEndAt - now) : 0;
+        if (!pvePreBattleCountdownUiActive()) return 0;
+        if (pveStartCountdownSpeechPending) return PVE_START_COUNTDOWN_SECONDS * 1000;
+        return Math.max(0, pveStartCountdownEndAt - now);
       }
       function pvePreBattleUnitSlowDragAllowed(now = performance.now()) {
-        return pvePreBattleCountdownUiActive() && !localPreBattleReady() && pvePreBattleRemainingMs(now) > 3000;
+        return pvePreBattleCountdownUiActive() && !pveStartCountdownSpeechPending && !localPreBattleReady() && pvePreBattleRemainingMs(now) > 3000;
       }
       function lockPvePreBattleHudForFinalThree() {
         closeHudDeployPopup();
@@ -13562,6 +13607,7 @@ ${discardLine}`);
         const now = performance.now();
         // PVE：30秒战前准备阶段仍允许操作；仅真正开战前最后3秒锁定HUD 7个主按钮。
         if (clientMode === 'pve' && pveStartCountdownActive && !started) {
+          if (pveStartCountdownSpeechPending) return false;
           const left = Math.max(0, pveStartCountdownEndAt - now);
           if (left > 0 && left <= 3000 + 50) return true;
         }
